@@ -4,6 +4,7 @@ import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from datetime import datetime
+from supabase import create_client, Client
 
 # =========================================================
 # 1. PAGE CONFIG
@@ -16,19 +17,58 @@ st.set_page_config(
 )
 
 # =========================================================
-# 2. DESIGN SYSTEM — APPLE x LINEAR x STRIPE
+# 2. SUPABASE CLIENT INITIALIZATION
 # =========================================================
-# Tokens:
-#   Background     : #050508  (pure deep slate-black)
-#   Panel          : #0D0E12  (dark graphite card)
-#   Border         : #1F242E  (razor-thin hairline)
-#   Text Primary   : #F5F6F8
-#   Text Secondary : #6E7480
-#   Accent (focus) : #5E8BFF  (neon-blue — EMA line, active states)
-#   Positive       : #00FFA3  (neon green)
-#   Negative       : #FF3366  (neon crimson)
-#   Data font      : 'JetBrains Mono' — all numbers
-#   Display font   : 'Inter' — all labels/prose
+# Requires SUPABASE_URL and SUPABASE_KEY in .streamlit/secrets.toml
+# (or the Streamlit Cloud Secrets manager).
+#
+# Expected schema — create these tables in the Supabase SQL editor
+# if they don't already exist:
+#
+#   create table profiles (
+#       username text primary key,
+#       available_cash numeric not null default 100000.0
+#   );
+#
+#   create table transactions (
+#       id bigint generated always as identity primary key,
+#       username text not null,
+#       ticker text not null,
+#       trade_type text not null,          -- 'BUY' or 'SELL'
+#       quantity numeric not null,
+#       execution_price numeric not null,
+#       total_value numeric not null,
+#       created_at timestamptz not null default now()
+#   );
+#
+# This app assumes a single hardcoded user, 'default_trader'. Multi-user
+# support would require swapping this constant for real auth (e.g. Supabase
+# Auth + st.session_state for the logged-in identity).
+USERNAME = "default_trader"
+STARTING_CASH = 100000.0
+
+@st.cache_resource
+def init_supabase() -> Client:
+    url = st.secrets["SUPABASE_URL"]
+    key = st.secrets["SUPABASE_KEY"]
+    return create_client(url, key)
+
+try:
+    supabase = init_supabase()
+    DB_AVAILABLE = True
+except Exception as e:
+    DB_AVAILABLE = False
+    st.error(
+        "⚠️ Could not connect to Supabase. Check that SUPABASE_URL and "
+        "SUPABASE_KEY are set correctly in your Streamlit secrets."
+    )
+    st.exception(e)
+    st.stop()
+
+
+# =========================================================
+# 3. DESIGN SYSTEM — APPLE x LINEAR x STRIPE (unchanged)
+# =========================================================
 st.markdown("""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700;800&display=swap');
@@ -41,7 +81,6 @@ st.markdown("""
         background-color: #050508;
     }
 
-    /* ---- Remove Streamlit visual clutter ---- */
     #MainMenu, footer, header[data-testid="stHeader"] {
         background-color: transparent;
     }
@@ -52,7 +91,6 @@ st.markdown("""
         padding-top: 2rem;
     }
 
-    /* ---- Sidebar — integrated, borderless feel ---- */
     section[data-testid="stSidebar"] {
         background-color: #050508;
         border-right: 1px solid #14171D;
@@ -65,7 +103,6 @@ st.markdown("""
         letter-spacing: -0.2px;
     }
 
-    /* ---- Native st.metric cards ---- */
     div[data-testid="stMetric"] {
         background-color: #0D0E12;
         border: 1px solid #1F242E;
@@ -89,7 +126,6 @@ st.markdown("""
         font-weight: 600;
     }
 
-    /* ---- Custom glow HUD cards ---- */
     .hud-card {
         background-color: #0D0E12;
         border: 1px solid #1F242E;
@@ -125,7 +161,6 @@ st.markdown("""
         text-shadow: 0 0 18px rgba(255, 51, 102, 0.35);
     }
 
-    /* ---- Headings ---- */
     h1 {
         font-family: 'Inter', sans-serif;
         font-weight: 800;
@@ -139,7 +174,6 @@ st.markdown("""
         letter-spacing: -0.3px;
     }
 
-    /* ---- Tabs ---- */
     button[data-baseweb="tab"] {
         font-size: 14.5px;
         font-weight: 600;
@@ -155,14 +189,12 @@ st.markdown("""
         background-color: #14171D;
     }
 
-    /* ---- Dataframes ---- */
     div[data-testid="stDataFrame"] {
         border: 1px solid #1F242E;
         border-radius: 10px;
         overflow: hidden;
     }
 
-    /* ---- Inputs ---- */
     div[data-testid="stTextInput"] input,
     div[data-testid="stNumberInput"] input {
         background-color: #0D0E12;
@@ -171,7 +203,6 @@ st.markdown("""
         font-family: 'JetBrains Mono', monospace;
     }
 
-    /* ---- Order panel execution buttons ---- */
     div.order-panel button[kind="primary"] {
         background-color: #00FFA3 !important;
         color: #050508 !important;
@@ -193,7 +224,6 @@ st.markdown("""
         letter-spacing: 0.3px;
     }
 
-    /* ---- Sidebar watchlist rows ---- */
     .watchlist-row {
         display: flex;
         justify-content: space-between;
@@ -219,7 +249,6 @@ st.markdown("""
         color: #6E7480 !important;
     }
 
-    /* ---- AI sentiment insight box ---- */
     .sentiment-box {
         background-color: #0D0E12;
         border: 1px solid #1F242E;
@@ -244,31 +273,174 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.markdown("# ⚡ Aether Terminal")
-st.caption("A hyper-minimalist financial command center · Live data · Simulated capital")
+st.caption("A hyper-minimalist financial command center · Live data · Supabase-backed persistence")
 
 # =========================================================
-# 3. SESSION STATE — PERSISTENCE LAYER
+# 4. SUPABASE DATA ACCESS LAYER
 # =========================================================
-if "cash" not in st.session_state:
-    st.session_state.cash = 100000.0
+# All reads/writes go through these functions. Nothing about portfolio,
+# cash, or trade history lives in st.session_state anymore — Supabase is
+# the single source of truth, queried fresh on every rerun.
 
-if "portfolio" not in st.session_state:
-    # ticker -> {"shares": int, "avg_cost": float}
-    st.session_state.portfolio = {}
+def get_or_create_profile(username: str) -> float:
+    """Fetch available_cash for a user. If no profile row exists yet
+    (first-ever run), create one seeded with STARTING_CASH."""
+    response = supabase.table("profiles").select("*").eq("username", username).execute()
 
-if "ledger" not in st.session_state:
-    # Permanent transaction log. SELL rows carry Realized P&L; BUY rows don't.
-    st.session_state.ledger = []
+    if response.data and len(response.data) > 0:
+        return float(response.data[0]["available_cash"])
 
-if "starting_value" not in st.session_state:
-    st.session_state.starting_value = 100000.0
+    # No profile yet — create one
+    supabase.table("profiles").insert({
+        "username": username,
+        "available_cash": STARTING_CASH,
+    }).execute()
+    return STARTING_CASH
 
-if "active_ticker" not in st.session_state:
-    st.session_state.active_ticker = "AAPL"
+
+def update_cash_balance(username: str, new_cash: float):
+    """Persist the user's updated cash balance back to the profiles table."""
+    supabase.table("profiles").update({
+        "available_cash": new_cash,
+    }).eq("username", username).execute()
+
+
+def fetch_transactions(username: str) -> pd.DataFrame:
+    """Fetch the full transaction history for a user, oldest first."""
+    response = (
+        supabase.table("transactions")
+        .select("*")
+        .eq("username", username)
+        .order("created_at", desc=False)
+        .execute()
+    )
+    if not response.data:
+        return pd.DataFrame(columns=[
+            "id", "username", "ticker", "trade_type",
+            "quantity", "execution_price", "total_value", "created_at"
+        ])
+    return pd.DataFrame(response.data)
+
+
+def insert_transaction(username, ticker, trade_type, quantity, execution_price, total_value):
+    """Write a single trade row to the transactions table."""
+    supabase.table("transactions").insert({
+        "username": username,
+        "ticker": ticker,
+        "trade_type": trade_type,
+        "quantity": quantity,
+        "execution_price": execution_price,
+        "total_value": total_value,
+    }).execute()
+
+
+def reset_account(username: str):
+    """Wipe all transactions and reset cash to STARTING_CASH for this user."""
+    supabase.table("transactions").delete().eq("username", username).execute()
+    supabase.table("profiles").update({
+        "available_cash": STARTING_CASH,
+    }).eq("username", username).execute()
+
+
+def compute_holdings_from_transactions(tx_df: pd.DataFrame) -> dict:
+    """Replay the full transaction log chronologically to derive net shares
+    owned and weighted-average cost basis per ticker. This is the
+    'transactions are the source of truth, portfolio is a derived view'
+    pattern — there is no separately-stored portfolio table.
+
+    Returns: { ticker: {"shares": float, "avg_cost": float} }
+    """
+    holdings = {}
+
+    if tx_df.empty:
+        return holdings
+
+    for _, row in tx_df.iterrows():
+        tkr = row["ticker"]
+        qty = float(row["quantity"])
+        price = float(row["execution_price"])
+        trade_type = row["trade_type"]
+
+        if tkr not in holdings:
+            holdings[tkr] = {"shares": 0.0, "avg_cost": 0.0}
+
+        position = holdings[tkr]
+
+        if trade_type == "BUY":
+            old_shares = position["shares"]
+            old_avg_cost = position["avg_cost"]
+            new_shares = old_shares + qty
+            # Weighted average cost basis across all BUYs
+            new_avg_cost = ((old_shares * old_avg_cost) + (qty * price)) / new_shares if new_shares > 0 else 0.0
+            position["shares"] = new_shares
+            position["avg_cost"] = new_avg_cost
+
+        elif trade_type == "SELL":
+            # Selling reduces share count but does NOT change avg_cost —
+            # cost basis of remaining shares is unaffected by a sale.
+            position["shares"] -= qty
+
+    # Drop tickers fully closed out (0 or negative shares from a sell)
+    holdings = {t: p for t, p in holdings.items() if p["shares"] > 1e-9}
+    return holdings
+
+
+def compute_realized_pnl(tx_df: pd.DataFrame) -> list:
+    """Replay transactions chronologically to compute realized P&L for each
+    SELL, using the running average cost basis at the moment of that sale.
+    This mirrors compute_holdings_from_transactions but tracks P&L per SELL
+    row, which is needed for Win Rate and Performance Insights."""
+    running = {}  # ticker -> {"shares": float, "avg_cost": float}
+    realized_trades = []
+
+    if tx_df.empty:
+        return realized_trades
+
+    for _, row in tx_df.iterrows():
+        tkr = row["ticker"]
+        qty = float(row["quantity"])
+        price = float(row["execution_price"])
+        trade_type = row["trade_type"]
+
+        if tkr not in running:
+            running[tkr] = {"shares": 0.0, "avg_cost": 0.0}
+
+        position = running[tkr]
+
+        if trade_type == "BUY":
+            old_shares = position["shares"]
+            old_avg_cost = position["avg_cost"]
+            new_shares = old_shares + qty
+            new_avg_cost = ((old_shares * old_avg_cost) + (qty * price)) / new_shares if new_shares > 0 else 0.0
+            position["shares"] = new_shares
+            position["avg_cost"] = new_avg_cost
+
+        elif trade_type == "SELL":
+            cost_basis_per_share = position["avg_cost"]
+            realized_dollar = (price - cost_basis_per_share) * qty
+            realized_pct = ((price - cost_basis_per_share) / cost_basis_per_share * 100) if cost_basis_per_share > 0 else 0.0
+            realized_trades.append({
+                "Ticker": tkr,
+                "Quantity": qty,
+                "Execution Price": price,
+                "Realized P&L ($)": realized_dollar,
+                "Realized P&L (%)": realized_pct,
+            })
+            position["shares"] -= qty
+
+    return realized_trades
+
+
+def calculate_win_rate(realized_trades: list):
+    if not realized_trades:
+        return None, 0, 0
+    wins = sum(1 for t in realized_trades if t["Realized P&L ($)"] > 0)
+    total = len(realized_trades)
+    return (wins / total * 100), wins, total
 
 
 # =========================================================
-# 4. DATA HELPERS
+# 5. MARKET DATA HELPERS (unchanged — yfinance, not DB-backed)
 # =========================================================
 @st.cache_data(ttl=60)
 def fetch_history(ticker_symbol: str, period: str = "3mo", interval: str = "1d"):
@@ -277,7 +449,6 @@ def fetch_history(ticker_symbol: str, period: str = "3mo", interval: str = "1d")
 
 
 def get_current_price(ticker_symbol: str):
-    """Return (latest_close, full_history_df) or (None, empty_df)."""
     try:
         hist = fetch_history(ticker_symbol, "3mo")
         if hist.empty:
@@ -289,7 +460,6 @@ def get_current_price(ticker_symbol: str):
 
 @st.cache_data(ttl=60)
 def get_macro_quote(ticker_symbol: str):
-    """Return (last_price, pct_change) for a macro index/asset."""
     try:
         hist = yf.Ticker(ticker_symbol).history(period="5d")
         if len(hist) < 2:
@@ -302,97 +472,15 @@ def get_macro_quote(ticker_symbol: str):
         return None, None
 
 
-def get_live_prices_for_portfolio():
+def get_live_prices_for_holdings(holdings: dict):
     prices = {}
-    for tkr in st.session_state.portfolio:
+    for tkr in holdings:
         price, _ = get_current_price(tkr)
         prices[tkr] = price if price is not None else 0.0
     return prices
 
 
-def log_buy(ticker_symbol, qty, price):
-    st.session_state.ledger.append({
-        "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "Ticker": ticker_symbol,
-        "Action Type": "BUY",
-        "Quantity": qty,
-        "Execution Price": price,
-        "Total Value": price * qty,
-        "Realized P&L ($)": None,
-        "Realized P&L (%)": None,
-    })
-
-
-def log_sell(ticker_symbol, qty, price, cost_basis_per_share):
-    """Realized P&L is computed at execution time against the average cost
-    basis being sold — required for Win Rate to mean anything real."""
-    realized_dollar = (price - cost_basis_per_share) * qty
-    realized_pct = ((price - cost_basis_per_share) / cost_basis_per_share * 100) if cost_basis_per_share > 0 else 0.0
-    st.session_state.ledger.append({
-        "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "Ticker": ticker_symbol,
-        "Action Type": "SELL",
-        "Quantity": qty,
-        "Execution Price": price,
-        "Total Value": price * qty,
-        "Realized P&L ($)": realized_dollar,
-        "Realized P&L (%)": realized_pct,
-    })
-
-
-def calculate_win_rate():
-    closed_trades = [t for t in st.session_state.ledger if t["Action Type"] == "SELL"]
-    if not closed_trades:
-        return None, 0, 0
-    wins = sum(1 for t in closed_trades if t["Realized P&L ($)"] > 0)
-    total = len(closed_trades)
-    return (wins / total * 100), wins, total
-
-
-def execute_buy(tkr, qty, price):
-    if not price:
-        st.error("Can't buy — invalid ticker price.")
-        return
-    total_cost = price * qty
-    if st.session_state.cash < total_cost:
-        st.error("Not enough cash for this trade.")
-        return
-    holding = st.session_state.portfolio.get(tkr, {"shares": 0, "avg_cost": 0.0})
-    old_shares, old_avg_cost = holding["shares"], holding["avg_cost"]
-    new_shares = old_shares + qty
-    new_avg_cost = ((old_shares * old_avg_cost) + (qty * price)) / new_shares
-
-    st.session_state.portfolio[tkr] = {"shares": new_shares, "avg_cost": new_avg_cost}
-    st.session_state.cash -= total_cost
-    log_buy(tkr, qty, price)
-    st.toast(f"Bought {qty} shares of {tkr} @ ${price:.2f}", icon="✅")
-
-
-def execute_sell(tkr, qty, price):
-    if not price:
-        st.error("Can't sell — invalid ticker price.")
-        return
-    holding = st.session_state.portfolio.get(tkr)
-    if not holding or holding["shares"] < qty:
-        st.error("You don't own enough shares to sell.")
-        return
-
-    cost_basis_per_share = holding["avg_cost"]
-    total_return = price * qty
-    st.session_state.cash += total_return
-    holding["shares"] -= qty
-
-    if holding["shares"] == 0:
-        del st.session_state.portfolio[tkr]
-    else:
-        st.session_state.portfolio[tkr] = holding
-
-    log_sell(tkr, qty, price, cost_basis_per_share)
-    st.toast(f"Sold {qty} shares of {tkr} @ ${price:.2f}", icon="💰")
-
-
 def render_hud_card(label, value_str, sub_str=None, glow=None):
-    """glow: None | 'green' | 'red' — controls neon glow styling."""
     glow_class = f"glow-{glow}" if glow else ""
     sub_html = f'<div class="hud-sub {glow_class}">{sub_str}</div>' if sub_str else ""
     st.markdown(
@@ -408,7 +496,52 @@ def render_hud_card(label, value_str, sub_str=None, glow=None):
 
 
 # =========================================================
-# 5. SIDEBAR — GLOBAL LIQUIDITY TRACKER (macro-only)
+# 6. TRADE EXECUTION (writes to Supabase, no session_state)
+# =========================================================
+def execute_buy(username, tkr, qty, price, current_cash):
+    if not price:
+        st.error("Can't buy — invalid ticker price.")
+        return False
+    total_cost = price * qty
+    if current_cash < total_cost:
+        st.error("Not enough cash for this trade.")
+        return False
+
+    insert_transaction(username, tkr, "BUY", qty, price, total_cost)
+    update_cash_balance(username, current_cash - total_cost)
+    st.toast(f"Bought {qty} shares of {tkr} @ ${price:.2f}", icon="✅")
+    return True
+
+
+def execute_sell(username, tkr, qty, price, current_cash, holdings):
+    if not price:
+        st.error("Can't sell — invalid ticker price.")
+        return False
+    position = holdings.get(tkr)
+    if not position or position["shares"] < qty:
+        st.error("You don't own enough shares to sell.")
+        return False
+
+    total_return = price * qty
+    insert_transaction(username, tkr, "SELL", qty, price, total_return)
+    update_cash_balance(username, current_cash + total_return)
+    st.toast(f"Sold {qty} shares of {tkr} @ ${price:.2f}", icon="💰")
+    return True
+
+
+# =========================================================
+# 7. SESSION STATE — UI-ONLY STATE (not financial data)
+# =========================================================
+# Note: cash, holdings, and trade history are now fully DB-backed and are
+# NOT stored here. The only thing kept in session_state is which ticker is
+# currently selected in the chart panel — pure UI state, fine to lose on
+# refresh, and irrelevant to data integrity.
+if "active_ticker" not in st.session_state:
+    st.session_state.active_ticker = "AAPL"
+
+
+# =========================================================
+# 8. SIDEBAR — GLOBAL LIQUIDITY TRACKER (macro-only, unchanged)
 # =========================================================
 with st.sidebar:
     st.markdown("## 🌐 Global Liquidity")
@@ -446,27 +579,31 @@ with st.sidebar:
             )
 
     st.markdown("---")
-    st.caption("Aether Terminal · Simulated capital only")
+    st.caption(f"Aether Terminal · {USERNAME} · Supabase-backed")
 
     if st.button("♻️ Reset Account", use_container_width=True):
-        st.session_state.cash = 100000.0
-        st.session_state.portfolio = {}
-        st.session_state.ledger = []
+        reset_account(USERNAME)
+        st.cache_data.clear()
         st.rerun()
 
 
 # =========================================================
-# 6. PORTFOLIO VALUATION (feeds HUD + Active Holdings tab)
+# 9. PULL LIVE STATE FROM SUPABASE (fresh every rerun)
 # =========================================================
-live_prices = get_live_prices_for_portfolio()
+current_cash = get_or_create_profile(USERNAME)
+tx_df = fetch_transactions(USERNAME)
+holdings = compute_holdings_from_transactions(tx_df)
+realized_trades = compute_realized_pnl(tx_df)
+
+live_prices = get_live_prices_for_holdings(holdings)
 
 holdings_value = 0.0
 total_cost_basis = 0.0
 portfolio_rows = []
 
-for tkr, data in st.session_state.portfolio.items():
-    sh = data["shares"]
-    avg_cost = data["avg_cost"]
+for tkr, position in holdings.items():
+    sh = position["shares"]
+    avg_cost = position["avg_cost"]
     live_price = live_prices.get(tkr, 0.0)
 
     market_value = sh * live_price
@@ -488,15 +625,15 @@ for tkr, data in st.session_state.portfolio.items():
         "Live P&L (%)": pnl_pct,
     })
 
-total_portfolio_value = st.session_state.cash + holdings_value
-overall_pnl_dollar = total_portfolio_value - st.session_state.starting_value
-overall_pnl_pct = (overall_pnl_dollar / st.session_state.starting_value * 100) if st.session_state.starting_value else 0.0
+total_portfolio_value = current_cash + holdings_value
+overall_pnl_dollar = total_portfolio_value - STARTING_CASH
+overall_pnl_pct = (overall_pnl_dollar / STARTING_CASH * 100) if STARTING_CASH else 0.0
 
-win_rate, win_count, closed_count = calculate_win_rate()
+win_rate, win_count, closed_count = calculate_win_rate(realized_trades)
 
 
 # =========================================================
-# 7. HUD — 4 GLOWING WIDGETS
+# 10. HUD — 4 GLOWING WIDGETS
 # =========================================================
 h1, h2, h3, h4 = st.columns(4)
 
@@ -504,7 +641,7 @@ with h1:
     render_hud_card("TOTAL PORTFOLIO LIQUIDITY", f"${total_portfolio_value:,.2f}")
 
 with h2:
-    render_hud_card("AVAILABLE BUYING POWER", f"${st.session_state.cash:,.2f}")
+    render_hud_card("AVAILABLE BUYING POWER", f"${current_cash:,.2f}")
 
 with h3:
     glow = "green" if overall_pnl_dollar >= 0 else "red"
@@ -531,7 +668,7 @@ with h4:
 st.markdown("---")
 
 # =========================================================
-# 8. MAIN TERMINAL — CHART (3.2) + ORDER PANEL (0.8)
+# 11. MAIN TERMINAL — CHART (3.2) + ORDER PANEL (0.8)
 # =========================================================
 chart_col, order_col = st.columns([3.2, 0.8])
 
@@ -551,7 +688,6 @@ with chart_col:
 
     if current_price and not historical_data.empty:
         hist = historical_data.copy()
-        # 20-day EMA (span=20 approximates a 20-day EMA in pandas)
         hist["EMA20"] = hist["Close"].ewm(span=20, adjust=False).mean()
 
         fig = make_subplots(
@@ -646,20 +782,24 @@ with order_col:
 
     st.markdown('</div>', unsafe_allow_html=True)
 
+    # On any trade: write to Supabase, then rerun so every figure on the
+    # page (HUD, holdings grid, ledger) re-reads fresh data from the DB.
     if order_buy:
-        execute_buy(active_ticker, order_qty, current_price)
+        if execute_buy(USERNAME, active_ticker, order_qty, current_price, current_cash):
+            st.rerun()
     if order_sell:
-        execute_sell(active_ticker, order_qty, current_price)
+        if execute_sell(USERNAME, active_ticker, order_qty, current_price, current_cash, holdings):
+            st.rerun()
 
 st.markdown("---")
 
 # =========================================================
-# 9. ANALYTICAL GRID & LEDGER — TABS
+# 12. ANALYTICAL GRID & LEDGER — TABS
 # =========================================================
 tab1, tab2, tab3 = st.tabs(["💼 Active Holdings Grid", "📜 Order Ledger", "🧠 AI Trader Sentiment"])
 
 # ---------------------------------------------------------
-# TAB 1 — ACTIVE HOLDINGS GRID
+# TAB 1 — ACTIVE HOLDINGS GRID (derived from transactions table)
 # ---------------------------------------------------------
 with tab1:
     st.markdown("#### Active Holdings")
@@ -701,30 +841,37 @@ with tab1:
         st.info("You don't own any stocks yet. Use the order panel to place your first trade.")
 
 # ---------------------------------------------------------
-# TAB 2 — ORDER LEDGER
+# TAB 2 — ORDER LEDGER (raw transactions table, newest first)
 # ---------------------------------------------------------
 with tab2:
     st.markdown("#### Order Ledger")
 
-    if st.session_state.ledger:
-        ledger_df = pd.DataFrame(st.session_state.ledger[::-1])[
-            ["Timestamp", "Ticker", "Action Type", "Quantity", "Execution Price", "Total Value"]
-        ]  # archive view per spec — core trade fields only
+    if not tx_df.empty:
+        ledger_view = tx_df.sort_values("created_at", ascending=False)[
+            ["created_at", "ticker", "trade_type", "quantity", "execution_price", "total_value"]
+        ].rename(columns={
+            "created_at": "Timestamp",
+            "ticker": "Asset Ticker",
+            "trade_type": "Action Type",
+            "quantity": "Quantity",
+            "execution_price": "Execution Price",
+            "total_value": "Total Value",
+        })
 
         st.dataframe(
-            ledger_df,
+            ledger_view,
             use_container_width=True,
             hide_index=True,
             column_config={
                 "Timestamp": st.column_config.TextColumn("Timestamp"),
-                "Ticker": st.column_config.TextColumn("Asset Ticker"),
+                "Asset Ticker": st.column_config.TextColumn("Asset Ticker"),
                 "Action Type": st.column_config.TextColumn("Action Type"),
                 "Quantity": st.column_config.NumberColumn("Quantity", format="%d"),
                 "Execution Price": st.column_config.NumberColumn("Execution Price", format="$%.2f"),
                 "Total Value": st.column_config.NumberColumn("Total Value", format="$%.2f"),
             },
         )
-        st.caption(f"Total trades executed: {len(st.session_state.ledger)}")
+        st.caption(f"Total trades executed: {len(tx_df)}")
     else:
         st.info("No trades recorded yet. Your transaction history will appear here once you start trading.")
 
